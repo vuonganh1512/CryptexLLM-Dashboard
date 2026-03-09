@@ -4,4 +4,4 @@
 ```bash
 python -m venv .venv
 source .venv/bin/activate   # mac/linux
-pip install -r requirements.txt
+pip install -r requirements.txt# CryptexLLM-Dashboard
