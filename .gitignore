@@ -9,8 +9,8 @@ __pycache__/
 .DS_Store
 .vscode/
 
+# generated
 data/
 outputs/
 __pycache__/
 *.pyc
-.ipynb_checkpoints/
