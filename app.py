@@ -1,137 +1,159 @@
-import os
 import json
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import httpx
 
-st.set_page_config(page_title="CryptexLLM Dashboard (Phase 2)", layout="wide")
+st.set_page_config(page_title="CryptexLLM Dashboard (Phase 3)", layout="wide")
 st.title("CryptexLLM Dashboard")
-st.caption("Phase 2: Multi-asset + Model vs Naive + Threshold backtest")
+st.caption("Phase 3: Distributed (API + Worker + Redis) — Streamlit reads from API")
 
-# Sidebar controls
+API_BASE = st.sidebar.text_input("API Base URL", "http://localhost:8000")
+
 asset = st.sidebar.selectbox("Asset", ["BTC-USD", "ETH-USD", "SOL-USD"], index=0)
 interval = st.sidebar.selectbox("Interval", ["1d"], index=0)
+threshold = st.sidebar.number_input("Threshold (e.g. 0.002 = 0.2%)", value=0.002, step=0.001, format="%.6f")
+fee_bps = st.sidebar.number_input("Fee (bps)", value=5.0, step=1.0)
 which_bt = st.sidebar.radio("Backtest to view", ["model", "naive"], horizontal=True)
 
-# Paths (Phase 2)
-raw_path = f"data/raw/{asset}_{interval}.parquet"
-metrics_path = f"outputs/metrics/{asset}_{interval}_metrics.json"
-bt_model_path = f"outputs/backtests/{asset}_{interval}_backtest_model.parquet"
-bt_naive_path = f"outputs/backtests/{asset}_{interval}_backtest_naive.parquet"
-summary_path = "outputs/tables/summary_phase2.csv"
+def fetch_json(path: str):
+    url = f"{API_BASE}{path}"
+    r = httpx.get(url, timeout=60)
+    r.raise_for_status()
+    return r.json()
 
-tab1, tab2, tab3, tab4 = st.tabs(["Market Overview", "Forecast Explorer", "Model Comparison", "Backtest"])
+def post_job():
+    url = f"{API_BASE}/jobs/train"
+    params = {"asset": asset, "interval": interval, "threshold": threshold, "fee_bps": fee_bps}
+    r = httpx.post(url, params=params, timeout=60)
+    r.raise_for_status()
+    return r.json()
+
+c0, c1, c2 = st.columns([1, 1, 2])
+with c0:
+    if st.button("Run Job (enqueue)"):
+        try:
+            resp = post_job()
+            st.success(f"Queued: {resp.get('job')}")
+        except Exception as e:
+            st.error(f"Failed to enqueue job: {e}")
+
+with c1:
+    if st.button("Refresh"):
+        st.rerun()
+
+with c2:
+    st.info("Tip: Run Job → wait a bit → Refresh to see updated metrics/backtest/explanation.")
+
+# ✅ Added new tab: LLM Explanation
+tab1, tab2, tab3, tab4 = st.tabs(["Metrics", "Backtest", "LLM Explanation", "Raw JSON"])
 
 # -------------------------
-# Tab 1: Market Overview
+# Metrics tab
 # -------------------------
 with tab1:
-    st.subheader("Market Overview")
-    if os.path.exists(raw_path):
-        raw = pd.read_parquet(raw_path)
-        raw["Date"] = pd.to_datetime(raw["Date"])
+    st.subheader(f"Metrics — {asset} ({interval})")
+    try:
+        metrics = fetch_json(f"/metrics/{asset}?interval={interval}")
+        model_m = metrics.get("model", {})
+        naive_m = metrics.get("naive", {})
 
-        fig_price = px.line(raw, x="Date", y="Close", title=f"{asset} Close Price")
-        st.plotly_chart(fig_price, width="stretch")
+        dfm = pd.DataFrame([
+            {"which": "model", **model_m},
+            {"which": "naive", **naive_m},
+        ])
+        st.dataframe(dfm, width="stretch")
 
-        if "Volume" in raw.columns:
-            fig_vol = px.bar(raw.tail(180), x="Date", y="Volume", title="Volume (last 180 rows)")
-            st.plotly_chart(fig_vol, width="stretch")
-    else:
-        st.info("No raw data found. Run Phase 2 pipeline to generate data/raw files.")
+        # Backtest summary
+        s1, s2 = st.columns(2)
+        with s1:
+            st.markdown("### Model backtest summary")
+            st.json(metrics.get("model_bt_summary", {}))
+        with s2:
+            st.markdown("### Naive backtest summary")
+            st.json(metrics.get("naive_bt_summary", {}))
+
+    except httpx.HTTPStatusError:
+        st.warning("No metrics yet. Run Job (enqueue) first.")
+    except Exception as e:
+        st.error(f"Error fetching metrics: {e}")
 
 # -------------------------
-# Tab 2: Forecast Explorer
+# Backtest tab
 # -------------------------
 with tab2:
-    st.subheader("Forecast Explorer (Actual vs Predicted Returns)")
-    bt_path = bt_model_path if which_bt == "model" else bt_naive_path
+    st.subheader(f"Backtest — {which_bt} — {asset} ({interval})")
+    try:
+        bt = fetch_json(f"/backtest/{which_bt}/{asset}?interval={interval}")
+        bt_df = pd.DataFrame(bt)
+        if "Date" in bt_df.columns:
+            bt_df["Date"] = pd.to_datetime(bt_df["Date"], errors="coerce")
 
-    if os.path.exists(bt_path):
-        bt = pd.read_parquet(bt_path)
-        bt["Date"] = pd.to_datetime(bt["Date"])
-
-        fig_ret = go.Figure()
-        fig_ret.add_trace(go.Scatter(x=bt["Date"], y=bt["actual_return"], mode="lines", name="Actual Return"))
-        fig_ret.add_trace(go.Scatter(x=bt["Date"], y=bt["pred_return"], mode="lines", name=f"Pred Return ({which_bt})"))
-        fig_ret.update_layout(title=f"{asset} — Actual vs Predicted Returns ({which_bt})")
-        st.plotly_chart(fig_ret, width="stretch")
-
-        st.dataframe(bt[["Date", "actual_return", "pred_return"]].tail(30), width="stretch")
-    else:
-        st.info("No backtest output found. Run: python -m scripts.train_and_eval (Phase 2).")
-
-# -------------------------
-# Tab 3: Model Comparison
-# -------------------------
-with tab3:
-    st.subheader("Model Comparison (Model vs Naive)")
-
-    c1, c2 = st.columns(2)
-
-    # Show per-asset metrics.json (model + naive)
-    with c1:
-        st.markdown("### Metrics for selected asset")
-        if os.path.exists(metrics_path):
-            with open(metrics_path, "r") as f:
-                m = json.load(f)
-
-            # Phase 2 metrics JSON structure: {"asset":..., "interval":..., "horizon":..., "model":{...}, "naive":{...}}
-            model_metrics = m.get("model", {})
-            naive_metrics = m.get("naive", {})
-
-            dfm = pd.DataFrame([
-                {"which": "model", **model_metrics},
-                {"which": "naive", **naive_metrics},
-            ])
-            st.dataframe(dfm, width="stretch")
-        else:
-            st.info("No metrics file found for this asset yet.")
-
-    # Show global summary table (multi-asset)
-    with c2:
-        st.markdown("### Phase 2 summary table (all assets)")
-        if os.path.exists(summary_path):
-            summary = pd.read_csv(summary_path)
-            st.dataframe(summary, width="stretch")
-
-            # Quick bar chart: cumulative return model vs naive
-            if "model_CumReturn" in summary.columns and "naive_CumReturn" in summary.columns:
-                fig_bar = px.bar(
-                    summary,
-                    x="asset",
-                    y=["model_CumReturn", "naive_CumReturn"],
-                    barmode="group",
-                    title="Cumulative Return: Model vs Naive"
-                )
-                st.plotly_chart(fig_bar, width="stretch")
-        else:
-            st.info("No summary table found. Run Phase 2 pipeline to generate outputs/tables/summary_phase2.csv")
-
-# -------------------------
-# Tab 4: Backtest
-# -------------------------
-with tab4:
-    st.subheader(f"Backtest ({which_bt})")
-    bt_path = bt_model_path if which_bt == "model" else bt_naive_path
-
-    if os.path.exists(bt_path):
-        bt = pd.read_parquet(bt_path)
-        bt["Date"] = pd.to_datetime(bt["Date"])
-
-        c1, c2 = st.columns(2)
-        with c1:
+        cA, cB = st.columns(2)
+        with cA:
             fig_cum = go.Figure()
-            fig_cum.add_trace(go.Scatter(x=bt["Date"], y=bt["cum_strategy"], mode="lines", name=f"{which_bt} strategy"))
-            fig_cum.add_trace(go.Scatter(x=bt["Date"], y=bt["cum_market"], mode="lines", name="market"))
+            if "cum_strategy" in bt_df.columns:
+                fig_cum.add_trace(go.Scatter(x=bt_df["Date"], y=bt_df["cum_strategy"], mode="lines", name="strategy"))
+            if "cum_market" in bt_df.columns:
+                fig_cum.add_trace(go.Scatter(x=bt_df["Date"], y=bt_df["cum_market"], mode="lines", name="market"))
             fig_cum.update_layout(title="Cumulative Return")
             st.plotly_chart(fig_cum, width="stretch")
 
-        with c2:
-            fig_dd = px.line(bt, x="Date", y="drawdown", title="Drawdown")
-            st.plotly_chart(fig_dd, width="stretch")
+        with cB:
+            if "drawdown" in bt_df.columns:
+                fig_dd = px.line(bt_df, x="Date", y="drawdown", title="Drawdown")
+                st.plotly_chart(fig_dd, width="stretch")
+            else:
+                st.info("No drawdown column found in backtest payload.")
 
-        st.dataframe(bt.tail(20), width="stretch")
-    else:
-        st.info("No backtest found. Run Phase 2 pipeline first.")
+        st.dataframe(bt_df.tail(50), width="stretch")
+
+    except httpx.HTTPStatusError:
+        st.warning("No backtest yet. Run Job (enqueue) first.")
+    except Exception as e:
+        st.error(f"Error fetching backtest: {e}")
+
+# -------------------------
+# LLM Explanation tab (Option A)
+# -------------------------
+with tab3:
+    st.subheader(f"LLM Explanation — {asset} ({interval})")
+    st.caption("This is a natural-language summary generated from metrics + backtest summaries and cached in Redis as explain:*")
+
+    try:
+        payload = fetch_json(f"/explain/{asset}?interval={interval}")
+        explanation = payload.get("explanation", "")
+        if explanation:
+            st.markdown(explanation)
+        else:
+            st.info("Explanation is empty. Run Job and refresh.")
+    except httpx.HTTPStatusError:
+        st.warning("No explanation yet. Run Job (enqueue) first, wait for the worker, then Refresh.")
+    except Exception as e:
+        st.error(f"Error fetching explanation: {e}")
+
+# -------------------------
+# Raw JSON tab
+# -------------------------
+with tab4:
+    st.subheader("Raw JSON (debug)")
+
+    try:
+        st.markdown("### /metrics")
+        st.json(fetch_json(f"/metrics/{asset}?interval={interval}"))
+    except Exception:
+        st.info("Metrics not available yet.")
+
+    try:
+        st.markdown("### /backtest")
+        st.json(fetch_json(f"/backtest/{which_bt}/{asset}?interval={interval}")[:5])
+        st.caption("Showing first 5 rows only.")
+    except Exception:
+        st.info("Backtest not available yet.")
+
+    try:
+        st.markdown("### /explain")
+        st.json(fetch_json(f"/explain/{asset}?interval={interval}"))
+    except Exception:
+        st.info("Explain not available yet.")

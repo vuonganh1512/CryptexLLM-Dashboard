@@ -1,7 +1,113 @@
-# CryptexLLM Dashboard (Starter)
+# CryptexLLM Dashboard (Phase 3)
+Distributed crypto time-series forecasting + backtesting dashboard with an LLM-style explanation layer.
 
-## Setup
+This project implements an end-to-end pipeline (data → features → model → metrics → backtest → explanation) and runs it in a **distributed architecture**:
+**Streamlit UI → FastAPI → Redis (queue/cache) → Worker → Redis → FastAPI → UI**.
+
+## Architecture (Phase 3)
+- **Streamlit UI (`app.py`)**: choose asset/params, enqueue jobs, visualize metrics/backtests/explanations.
+- **FastAPI (`services/api/main.py`)**: HTTP endpoints to enqueue jobs + serve cached outputs.
+- **Worker (`services/worker/worker.py`)**: consumes jobs, runs ML + backtest pipeline, writes results to Redis.
+- **Redis**: queue (`jobs:train`) + cache (`metrics:*`, `bt:*`, `explain:*`).
+- **Explanation layer (`src/explain.py`)**: generates a natural-language summary from metrics + backtest and caches it in Redis.
+
+## Requirements
+- Docker Desktop (with `docker compose`)
+- Python 3.11+ (for local Streamlit UI) — optional if you containerize UI later
+
+## Quickstart (recommended: Docker services + local Streamlit UI)
+### 1) Start Redis + API + Worker (Docker)
 ```bash
-python -m venv .venv
-source .venv/bin/activate   # mac/linux
-pip install -r requirements.txt# CryptexLLM-Dashboard
+docker compose up --build
+```
+You should see:
+- Redis: “Ready to accept connections”
+- API: “Uvicorn running on http://0.0.0.0:8000”
+- Worker: “waiting for jobs on jobs:train …”
+
+### 2) Start Streamlit (local)
+In a new terminal:
+```bash
+streamlit run app.py
+```
+Open: http://localhost:8501
+
+### 3) Run a job
+- Select asset (BTC-USD / ETH-USD / SOL-USD)
+- Set `threshold` (e.g., 0.002) and `fee_bps` (e.g., 5)
+- Click **Run Job (enqueue)**
+- Click **Refresh** after the worker finishes
+
+## API endpoints
+- `POST /jobs/train?asset=BTC-USD&interval=1d&threshold=0.002&fee_bps=5`
+- `GET  /metrics/{asset}?interval=1d`
+- `GET  /backtest/{which}/{asset}?interval=1d` where `which ∈ {model, naive}`
+- `GET  /explain/{asset}?interval=1d`
+- Docs: http://localhost:8000/docs
+
+## Redis keys (Phase 3)
+- Queue:
+  - `jobs:train`
+- Cached outputs (per asset/interval):
+  - `metrics:{asset}:{interval}`
+  - `bt:model:{asset}:{interval}`
+  - `bt:naive:{asset}:{interval}`
+  - `explain:{asset}:{interval}`
+
+Proof:
+```bash
+docker exec -it cryptexllm-dashboard-redis-1 redis-cli KEYS "metrics:*"
+docker exec -it cryptexllm-dashboard-redis-1 redis-cli KEYS "bt:*"
+docker exec -it cryptexllm-dashboard-redis-1 redis-cli KEYS "explain:*"
+```
+
+## Outputs and how to read them
+### Metrics (`/metrics/{asset}`)
+Model vs naive metrics:
+- **MAE / RMSE**: lower is better (prediction error on returns).
+- **sMAPE**: lower is better; more stable than MAPE for near-zero returns.
+- **DirectionalAccuracy**: higher is better; ~0.50 is close to random direction guessing.
+- **Spearman / Pearson**: correlation between predicted and actual returns (often small in noisy markets).
+
+### Backtest (`/backtest/{which}/{asset}`) + summaries
+Threshold long/flat strategy with transaction fees:
+- **CumulativeReturn**: total return (higher is better).
+- **MaxDrawdown**: worst peak-to-trough loss (closer to 0 is safer).
+- **HitRate**: fraction of profitable trades.
+- **Trades**: number of position changes (more trades → more fee drag).
+- **Exposure**: average time invested (0–1). Threshold usually reduces exposure.
+
+### Explanation (`/explain/{asset}`)
+- Returns a short **natural-language explanation** generated from:
+  - model vs naive metrics
+  - model vs naive backtest summaries
+  - strategy parameters (threshold, fee_bps)
+- Cached in Redis as: `explain:{asset}:{interval}`
+- Note: if you restart containers, Redis cache resets → run a job again to regenerate the explanation.
+
+## Troubleshooting
+- **404 on `/metrics`, `/backtest`, or `/explain`**: normal if requested before the worker finishes or after a fresh restart. Refresh after worker prints:
+  - `wrote metrics key: metrics:<ASSET>:<INTERVAL>`
+  - `wrote backtest keys: bt:model:<ASSET>:<INTERVAL> and bt:naive:<ASSET>:<INTERVAL>`
+  - `wrote explain key: explain:<ASSET>:<INTERVAL>`
+- **Timestamp not JSON serializable**: fix by converting Date to ISO strings before `json.dumps()` (already handled in worker).
+- **Large files / GitHub push rejected**: never commit `.venv/`, `data/`, `outputs/`. Use `.gitignore`.
+
+## Project structure
+```
+app.py
+services/
+  api/main.py
+  worker/worker.py
+src/
+  config.py
+  data_loader.py
+  features.py
+  models.py
+  evaluate.py
+  backtest.py
+  explain.py
+docker-compose.yml
+Dockerfile
+requirements.txt
+```
