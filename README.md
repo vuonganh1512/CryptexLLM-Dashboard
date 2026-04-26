@@ -69,7 +69,7 @@ The explanation layer uses the OpenAI Python SDK (`openai>=1.0.0`). To enable re
 1) Create a `.env` file in the repo root (DO NOT COMMIT IT):
 ```env
 OPENAI_API_KEY=YOUR_KEY_HERE
-OPENAI_MODEL=gpt-5.5
+OPENAI_MODEL=gpt-5.4-mini
 EXPLAIN_DEBUG=0
 ```
 
