@@ -8,7 +8,7 @@ from src.features import build_features, get_feature_columns
 from src.models import time_split, train_regressor, predict
 from src.evaluate import regression_metrics
 from src.backtest import simple_backtest, backtest_summary
-from src.explain import generate_explanation_template
+from src.explain import generate_explanation
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 r = redis.from_url(REDIS_URL, decode_responses=True)
@@ -111,7 +111,7 @@ def run_job(job: dict):
         "metrics": {"model": metrics_model, "naive": metrics_naive},
         "backtest_summary": {"model": model_bt_summary, "naive": naive_bt_summary},
     }
-    explain_text = generate_explanation_template(analysis_pkg)
+    explain_text = generate_explanation(analysis_pkg)
     ekey = key_explain(asset, interval)
     r.set(ekey, explain_text)
     print("[worker] wrote explain key:", ekey)

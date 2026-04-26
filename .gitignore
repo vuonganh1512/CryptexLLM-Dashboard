@@ -9,8 +9,17 @@ __pycache__/
 .DS_Store
 .vscode/
 
-# generated
+# Secrets (DO NOT COMMIT)
+.env
+
+# generated / local artifacts
 data/
 outputs/
-__pycache__/
-*.pyc
+*.parquet
+*.json
+*.log
+.cache/
+
+# (optional) local DB/cache
+*.db
+*.sqlite

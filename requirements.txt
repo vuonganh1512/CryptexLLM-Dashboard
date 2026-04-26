@@ -12,3 +12,4 @@ uvicorn[standard]
 redis
 httpx
 pydantic
+openai>=1.0.0

@@ -12,6 +12,8 @@ services:
       - "8000:8000"
     environment:
       - REDIS_URL=redis://redis:6379/0
+    env_file:
+      - .env
     depends_on:
       - redis
 
@@ -20,5 +22,7 @@ services:
     command: python -m services.worker.worker
     environment:
       - REDIS_URL=redis://redis:6379/0
+    env_file:
+      - .env
     depends_on:
       - redis
